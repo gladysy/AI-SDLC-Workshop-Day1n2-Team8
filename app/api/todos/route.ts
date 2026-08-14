@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth';
-import { todoDB } from '@/lib/db';
+import { subtaskDB, todoDB } from '@/lib/db';
 import { validatePriority } from '@/lib/priority';
+import { isRecurrencePattern } from '@/lib/recurrence';
+import { validateReminderMinutes } from '@/lib/reminders';
 import { getSingaporeNow } from '@/lib/timezone';
 
 export async function GET() {
@@ -9,7 +11,11 @@ export async function GET() {
   if (!session) {
     return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
   }
-  return NextResponse.json(todoDB.findAllByUser(session.userId));
+  const todos = todoDB.findAllByUser(session.userId).map((todo) => ({
+    ...todo,
+    subtasks: subtaskDB.findByTodoId(todo.id),
+  }));
+  return NextResponse.json(todos);
 }
 
 export async function POST(request: NextRequest) {
@@ -26,6 +32,9 @@ export async function POST(request: NextRequest) {
   const title = (body.title ?? '').trim();
   if (!title) {
     return NextResponse.json({ error: 'Title is required' }, { status: 400 });
+  }
+  if (title.length > 500) {
+    return NextResponse.json({ error: 'Title too long' }, { status: 400 });
   }
 
   let priority;
@@ -51,14 +60,42 @@ export async function POST(request: NextRequest) {
     due_date = body.due_date;
   }
 
+  const isRecurring = Boolean(body.is_recurring);
+  const recurrencePattern = body.recurrence_pattern ?? null;
+
+  if (isRecurring && !due_date) {
+    return NextResponse.json(
+      { error: 'Recurring todos require a due date' },
+      { status: 400 }
+    );
+  }
+
+  if (isRecurring && !isRecurrencePattern(recurrencePattern)) {
+    return NextResponse.json({ error: 'Invalid recurrence pattern' }, { status: 400 });
+  }
+
+  let reminderMinutes: ReturnType<typeof validateReminderMinutes>;
+  try {
+    reminderMinutes = validateReminderMinutes(body.reminder_minutes);
+  } catch (err) {
+    return NextResponse.json({ error: (err as Error).message }, { status: 400 });
+  }
+
+  if (!due_date && reminderMinutes !== null) {
+    return NextResponse.json(
+      { error: 'Reminders require a due date' },
+      { status: 400 }
+    );
+  }
+
   const todo = todoDB.create({
     user_id: session.userId,
     title,
     due_date,
     priority,
-    is_recurring: body.is_recurring ?? false,
-    recurrence_pattern: body.recurrence_pattern ?? null,
-    reminder_minutes: body.reminder_minutes ?? null,
+    is_recurring: isRecurring,
+    recurrence_pattern: isRecurring ? recurrencePattern : null,
+    reminder_minutes: reminderMinutes,
     tag_ids: body.tag_ids ?? [],
   });
 

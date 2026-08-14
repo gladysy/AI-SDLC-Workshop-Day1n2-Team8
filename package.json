@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "test:unit": "node --import tsx --test tests/unit/priority.test.ts tests/unit/todoSort.test.ts tests/unit/timezone.test.ts"
+    "test:unit": "node --import tsx --test tests/unit/priority.test.ts tests/unit/todoSort.test.ts tests/unit/timezone.test.ts tests/unit/recurrence.test.ts tests/unit/reminders.test.ts tests/unit/subtasks.test.ts"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",

@@ -1,20 +1,21 @@
 'use client';
 
-import {
-  type FormEvent,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from 'react';
-import type { Todo } from '@/lib/db';
+import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
+import type { RecurrencePattern, Subtask, Todo } from '@/lib/db';
+import { useNotifications } from '@/lib/hooks/useNotifications';
 import {
   PRIORITY_LABELS,
   PRIORITY_STYLES,
   PRIORITY_VALUES,
   type Priority,
 } from '@/lib/priority';
+import { isRecurrencePattern } from '@/lib/recurrence';
+import {
+  REMINDER_LABELS,
+  REMINDER_VALUES,
+  type ReminderMinutes,
+} from '@/lib/reminders';
+import { calculateProgress } from '@/lib/subtasks';
 import { sectionTodos, sortTodos, type TodoSections } from '@/lib/todoSort';
 import {
   formatSingaporeDate,
@@ -24,6 +25,14 @@ import {
 } from '@/lib/timezone';
 
 type PriorityFilter = Priority | 'all';
+type TodoUpdatePayload = { todo: Todo | null; nextInstance?: Todo };
+
+const RECURRENCE_OPTIONS: RecurrencePattern[] = [
+  'daily',
+  'weekly',
+  'monthly',
+  'yearly',
+];
 
 function PriorityBadge({ priority }: { priority: Priority }) {
   return (
@@ -31,6 +40,22 @@ function PriorityBadge({ priority }: { priority: Priority }) {
       className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${PRIORITY_STYLES[priority]}`}
     >
       {PRIORITY_LABELS[priority]}
+    </span>
+  );
+}
+
+function RecurrenceBadge({ pattern }: { pattern: RecurrencePattern }) {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border border-purple-300 bg-purple-100 px-2 py-0.5 text-xs font-medium text-purple-800 dark:border-purple-700 dark:bg-purple-900/40 dark:text-purple-200">
+      {'\u{1F501}'} {pattern}
+    </span>
+  );
+}
+
+function ReminderBadge({ minutes }: { minutes: ReminderMinutes }) {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border border-orange-300 bg-orange-100 px-2 py-0.5 text-xs font-medium text-orange-800 dark:border-orange-700 dark:bg-orange-900/40 dark:text-orange-200">
+      {'\u{1F514}'} {REMINDER_LABELS[minutes]}
     </span>
   );
 }
@@ -60,61 +85,213 @@ function PrioritySelect({
   );
 }
 
+function NotificationToggle() {
+  const { permission, requestPermission } = useNotifications();
+  const enabled = permission === 'granted';
+
+  return (
+    <button
+      onClick={requestPermission}
+      disabled={enabled}
+      className={`rounded-md px-3 py-2 text-sm font-medium ${
+        enabled
+          ? 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200'
+          : 'bg-orange-500 text-white hover:bg-orange-600'
+      }`}
+      type="button"
+    >
+      {enabled ? '\u{1F514} Notifications On' : '\u{1F514} Enable Notifications'}
+    </button>
+  );
+}
+
+function ProgressBar({ subtasks }: { subtasks: Subtask[] }) {
+  const { completed, total, percent } = calculateProgress(subtasks);
+  if (total === 0) return null;
+
+  const barColor = percent === 100 ? 'bg-green-500' : 'bg-blue-500';
+
+  return (
+    <div className="mt-2">
+      <div className="mb-1 flex justify-between text-xs text-gray-500 dark:text-gray-400">
+        <span>
+          {completed}/{total} subtasks
+        </span>
+        <span>{percent}%</span>
+      </div>
+      <div className="h-2 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
+        <div className={`h-full ${barColor} transition-all duration-200`} style={{ width: `${percent}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function SubtaskPanel({
+  todo,
+  onAdd,
+  onToggle,
+  onDelete,
+}: {
+  todo: Todo;
+  onAdd: (todoId: number, title: string) => Promise<void>;
+  onToggle: (todoId: number, subtask: Subtask) => Promise<void>;
+  onDelete: (todoId: number, subtaskId: number) => Promise<void>;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [newTitle, setNewTitle] = useState('');
+  const subtasks = todo.subtasks ?? [];
+
+  const handleAdd = async () => {
+    const title = newTitle.trim();
+    if (!title) return;
+    await onAdd(todo.id, title);
+    setNewTitle('');
+  };
+
+  return (
+    <div className="mt-2">
+      <button
+        onClick={() => setExpanded((value) => !value)}
+        className="text-sm text-gray-500 dark:text-gray-400"
+        type="button"
+      >
+        {expanded ? '\u25BC' : '\u25B6'} Subtasks
+      </button>
+
+      <ProgressBar subtasks={subtasks} />
+
+      {expanded && (
+        <div className="mt-2 space-y-2 pl-4">
+          {subtasks.map((subtask) => (
+            <div key={subtask.id} className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={subtask.completed}
+                onChange={() => {
+                  void onToggle(todo.id, subtask);
+                }}
+              />
+              <span className={subtask.completed ? 'text-gray-400 line-through' : ''}>{subtask.title}</span>
+              <button
+                onClick={() => {
+                  void onDelete(todo.id, subtask.id);
+                }}
+                className="ml-auto text-sm text-red-600 hover:underline dark:text-red-400"
+                type="button"
+              >
+                {'\u2715'}
+              </button>
+            </div>
+          ))}
+
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={newTitle}
+              onChange={(e) => setNewTitle(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  void handleAdd();
+                }
+              }}
+              placeholder="Add subtask..."
+              className="flex-1 rounded-md border border-gray-300 bg-white px-2 py-1 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+            />
+            <button
+              onClick={() => {
+                void handleAdd();
+              }}
+              className="text-sm text-blue-600 hover:underline dark:text-blue-400"
+              type="button"
+            >
+              Add
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TodoItem({
   todo,
   onToggle,
   onEdit,
   onDelete,
+  onAddSubtask,
+  onToggleSubtask,
+  onDeleteSubtask,
 }: {
   todo: Todo;
   onToggle: (todo: Todo, completed: boolean) => void;
   onEdit: (todo: Todo) => void;
   onDelete: (todo: Todo) => void;
+  onAddSubtask: (todoId: number, title: string) => Promise<void>;
+  onToggleSubtask: (todoId: number, subtask: Subtask) => Promise<void>;
+  onDeleteSubtask: (todoId: number, subtaskId: number) => Promise<void>;
 }) {
   return (
-    <li className="flex items-center justify-between gap-3 rounded-lg bg-white p-4 shadow-sm dark:bg-gray-800">
-      <div className="flex min-w-0 items-start gap-3">
-        <input
-          type="checkbox"
-          checked={todo.completed}
-          onChange={(e) => onToggle(todo, e.target.checked)}
-          className="mt-1 h-5 w-5 shrink-0 rounded border-gray-300 dark:border-gray-600"
-          aria-label={`Mark "${todo.title}" as ${todo.completed ? 'incomplete' : 'complete'}`}
-        />
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <p
-              className={`truncate font-medium ${
-                todo.completed
-                  ? 'text-gray-400 line-through dark:text-gray-500'
-                  : 'text-gray-800 dark:text-white'
-              }`}
-            >
-              {todo.title}
-            </p>
-            <PriorityBadge priority={todo.priority} />
+    <li className="rounded-lg bg-white p-4 shadow-sm dark:bg-gray-800">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex min-w-0 items-start gap-3">
+          <input
+            type="checkbox"
+            checked={todo.completed}
+            onChange={(e) => onToggle(todo, e.target.checked)}
+            className="mt-1 h-5 w-5 shrink-0 rounded border-gray-300 dark:border-gray-600"
+            aria-label={`Mark \"${todo.title}\" as ${todo.completed ? 'incomplete' : 'complete'}`}
+          />
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <p
+                className={`truncate font-medium ${
+                  todo.completed
+                    ? 'text-gray-400 line-through dark:text-gray-500'
+                    : 'text-gray-800 dark:text-white'
+                }`}
+              >
+                {todo.title}
+              </p>
+              <PriorityBadge priority={todo.priority} />
+              {todo.is_recurring && todo.recurrence_pattern && (
+                <RecurrenceBadge pattern={todo.recurrence_pattern} />
+              )}
+              {todo.reminder_minutes !== null && (
+                <ReminderBadge minutes={todo.reminder_minutes as ReminderMinutes} />
+              )}
+            </div>
+            {todo.due_date && (
+              <span className="text-sm text-gray-500 dark:text-gray-400">
+                Due {formatSingaporeDate(todo.due_date)}
+              </span>
+            )}
           </div>
-          {todo.due_date && (
-            <span className="text-sm text-gray-500 dark:text-gray-400">
-              Due {formatSingaporeDate(todo.due_date)}
-            </span>
-          )}
+        </div>
+        <div className="flex shrink-0 gap-3 text-sm">
+          <button
+            onClick={() => onEdit(todo)}
+            className="text-blue-600 hover:underline dark:text-blue-400"
+            type="button"
+          >
+            Edit
+          </button>
+          <button
+            onClick={() => onDelete(todo)}
+            className="text-red-600 hover:underline dark:text-red-400"
+            type="button"
+          >
+            Delete
+          </button>
         </div>
       </div>
-      <div className="flex shrink-0 gap-3 text-sm">
-        <button
-          onClick={() => onEdit(todo)}
-          className="text-blue-600 hover:underline dark:text-blue-400"
-        >
-          Edit
-        </button>
-        <button
-          onClick={() => onDelete(todo)}
-          className="text-red-600 hover:underline dark:text-red-400"
-        >
-          Delete
-        </button>
-      </div>
+
+      <SubtaskPanel
+        todo={todo}
+        onAdd={onAddSubtask}
+        onToggle={onToggleSubtask}
+        onDelete={onDeleteSubtask}
+      />
     </li>
   );
 }
@@ -126,6 +303,9 @@ function Section({
   onToggle,
   onEdit,
   onDelete,
+  onAddSubtask,
+  onToggleSubtask,
+  onDeleteSubtask,
 }: {
   title: string;
   accent: string;
@@ -133,6 +313,9 @@ function Section({
   onToggle: (todo: Todo, completed: boolean) => void;
   onEdit: (todo: Todo) => void;
   onDelete: (todo: Todo) => void;
+  onAddSubtask: (todoId: number, title: string) => Promise<void>;
+  onToggleSubtask: (todoId: number, subtask: Subtask) => Promise<void>;
+  onDeleteSubtask: (todoId: number, subtaskId: number) => Promise<void>;
 }) {
   if (todos.length === 0) return null;
   return (
@@ -148,6 +331,9 @@ function Section({
             onToggle={onToggle}
             onEdit={onEdit}
             onDelete={onDelete}
+            onAddSubtask={onAddSubtask}
+            onToggleSubtask={onToggleSubtask}
+            onDeleteSubtask={onDeleteSubtask}
           />
         ))}
       </ul>
@@ -160,44 +346,47 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Create form
   const [title, setTitle] = useState('');
   const [priority, setPriority] = useState<Priority>('medium');
   const [dueLocal, setDueLocal] = useState('');
+  const [isRecurring, setIsRecurring] = useState(false);
+  const [recurrencePattern, setRecurrencePattern] = useState<RecurrencePattern>('weekly');
+  const [reminderMinutes, setReminderMinutes] = useState<ReminderMinutes | null>(null);
 
-  // Filter
   const [priorityFilter, setPriorityFilter] = useState<PriorityFilter>('all');
 
-  // Edit modal
   const [editing, setEditing] = useState<Todo | null>(null);
   const [editTitle, setEditTitle] = useState('');
   const [editPriority, setEditPriority] = useState<Priority>('medium');
   const [editDueLocal, setEditDueLocal] = useState('');
+  const [editIsRecurring, setEditIsRecurring] = useState(false);
+  const [editRecurrencePattern, setEditRecurrencePattern] = useState<RecurrencePattern>('weekly');
+  const [editReminderMinutes, setEditReminderMinutes] = useState<ReminderMinutes | null>(null);
+
+  const loadTodos = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch('/api/todos');
+      if (!res.ok) throw new Error('Failed to load todos');
+      const data: Todo[] = await res.json();
+      setTodos(data);
+      setError(null);
+    } catch {
+      setError('Could not load todos.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    let active = true;
-    (async () => {
-      try {
-        const res = await fetch('/api/todos');
-        if (!res.ok) throw new Error('Failed to load todos');
-        const data: Todo[] = await res.json();
-        if (active) setTodos(data);
-      } catch {
-        if (active) setError('Could not load todos.');
-      } finally {
-        if (active) setLoading(false);
-      }
-    })();
-    return () => {
-      active = false;
-    };
-  }, []);
+    void loadTodos();
+  }, [loadTodos]);
 
   const visibleTodos = useMemo(
     () =>
       priorityFilter === 'all'
         ? todos
-        : todos.filter((t) => t.priority === priorityFilter),
+        : todos.filter((todo) => todo.priority === priorityFilter),
     [todos, priorityFilter]
   );
 
@@ -210,7 +399,15 @@ export default function Home() {
     setTitle('');
     setPriority('medium');
     setDueLocal('');
+    setIsRecurring(false);
+    setRecurrencePattern('weekly');
+    setReminderMinutes(null);
   };
+
+  const normalizeTodo = (todo: Todo): Todo => ({
+    ...todo,
+    subtasks: todo.subtasks ?? [],
+  });
 
   const handleAdd = useCallback(
     async (e: FormEvent) => {
@@ -223,14 +420,24 @@ export default function Home() {
         return;
       }
 
-      let due_date: string | null = null;
+      let dueDate: string | null = null;
       if (dueLocal) {
-        due_date = fromSingaporeInputValue(dueLocal);
+        dueDate = fromSingaporeInputValue(dueLocal);
         const minDue = new Date(getSingaporeNow().getTime() + 60_000);
-        if (!due_date || new Date(due_date) < minDue) {
+        if (!dueDate || new Date(dueDate) < minDue) {
           setError('Due date must be at least 1 minute in the future.');
           return;
         }
+      }
+
+      if (isRecurring && !dueDate) {
+        setError('Recurring todos require a due date.');
+        return;
+      }
+
+      if (reminderMinutes !== null && !dueDate) {
+        setError('Reminders require a due date.');
+        return;
       }
 
       const optimistic: Todo = {
@@ -238,14 +445,15 @@ export default function Home() {
         user_id: 0,
         title: trimmed,
         completed: false,
-        due_date,
+        due_date: dueDate,
         priority,
-        is_recurring: false,
-        recurrence_pattern: null,
-        reminder_minutes: null,
+        is_recurring: isRecurring,
+        recurrence_pattern: isRecurring ? recurrencePattern : null,
+        reminder_minutes: reminderMinutes,
         last_notification_sent: null,
-        created_at: new Date().toISOString(),
+        created_at: getSingaporeNow().toISOString(),
         updated_at: null,
+        subtasks: [],
       };
 
       setTodos((prev) => [...prev, optimistic]);
@@ -255,40 +463,68 @@ export default function Home() {
         const res = await fetch('/api/todos', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title: trimmed, priority, due_date }),
+          body: JSON.stringify({
+            title: trimmed,
+            priority,
+            due_date: dueDate,
+            is_recurring: isRecurring,
+            recurrence_pattern: isRecurring ? recurrencePattern : null,
+            reminder_minutes: reminderMinutes,
+          }),
         });
-        if (!res.ok) throw new Error('create failed');
-        const saved: Todo = await res.json();
-        setTodos((prev) => prev.map((t) => (t.id === optimistic.id ? saved : t)));
-      } catch {
-        setTodos((prev) => prev.filter((t) => t.id !== optimistic.id));
-        setError('Could not create todo. Please try again.');
+        if (!res.ok) {
+          const payload = (await res.json().catch(() => ({}))) as { error?: string };
+          throw new Error(payload.error ?? 'create failed');
+        }
+        const saved = normalizeTodo((await res.json()) as Todo);
+        setTodos((prev) => prev.map((todo) => (todo.id === optimistic.id ? saved : todo)));
+      } catch (err) {
+        setTodos((prev) => prev.filter((todo) => todo.id !== optimistic.id));
+        setError((err as Error).message || 'Could not create todo. Please try again.');
       }
     },
-    [title, priority, dueLocal]
+    [title, priority, dueLocal, isRecurring, recurrencePattern, reminderMinutes]
   );
 
+  const applyUpdatePayload = (targetId: number, payload: TodoUpdatePayload) => {
+    setTodos((prev) => {
+      const base = prev.map((todo) =>
+        todo.id === targetId && payload.todo ? normalizeTodo(payload.todo) : todo
+      );
+      if (!payload.nextInstance) {
+        return base;
+      }
+      return sortTodos([...base, normalizeTodo(payload.nextInstance)]);
+    });
+  };
+
   const handleToggle = useCallback(async (todo: Todo, completed: boolean) => {
-    setTodos((prev) => prev.map((t) => (t.id === todo.id ? { ...t, completed } : t)));
+    setTodos((prev) => prev.map((item) => (item.id === todo.id ? { ...item, completed } : item)));
+
     try {
       const res = await fetch(`/api/todos/${todo.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ completed }),
       });
-      if (!res.ok) throw new Error('toggle failed');
-      const saved: Todo = await res.json();
-      setTodos((prev) => prev.map((t) => (t.id === todo.id ? saved : t)));
+      if (!res.ok) {
+        throw new Error('Could not update todo.');
+      }
+
+      const payload = (await res.json()) as TodoUpdatePayload;
+      applyUpdatePayload(todo.id, payload);
     } catch {
       setTodos((prev) =>
-        prev.map((t) => (t.id === todo.id ? { ...t, completed: !completed } : t))
+        prev.map((item) =>
+          item.id === todo.id ? { ...item, completed: !completed } : item
+        )
       );
       setError('Could not update todo.');
     }
   }, []);
 
   const handleDelete = useCallback(async (todo: Todo) => {
-    setTodos((prev) => prev.filter((t) => t.id !== todo.id));
+    setTodos((prev) => prev.filter((item) => item.id !== todo.id));
     try {
       const res = await fetch(`/api/todos/${todo.id}`, { method: 'DELETE' });
       if (!res.ok) throw new Error('delete failed');
@@ -298,11 +534,166 @@ export default function Home() {
     }
   }, []);
 
+  const handleAddSubtask = useCallback(async (todoId: number, titleValue: string) => {
+    const trimmed = titleValue.trim();
+    if (!trimmed) return;
+
+    const optimisticSubtask: Subtask = {
+      id: -Date.now(),
+      todo_id: todoId,
+      title: trimmed,
+      completed: false,
+      position: (todos.find((todo) => todo.id === todoId)?.subtasks?.length ?? 0) + 1,
+      created_at: getSingaporeNow().toISOString(),
+    };
+
+    setTodos((prev) =>
+      prev.map((todo) =>
+        todo.id === todoId
+          ? { ...todo, subtasks: [...(todo.subtasks ?? []), optimisticSubtask] }
+          : todo
+      )
+    );
+
+    try {
+      const response = await fetch(`/api/todos/${todoId}/subtasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: trimmed }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Could not add subtask.');
+      }
+
+      const saved = (await response.json()) as Subtask;
+      setTodos((prev) =>
+        prev.map((todo) =>
+          todo.id === todoId
+            ? {
+                ...todo,
+                subtasks: (todo.subtasks ?? []).map((subtask) =>
+                  subtask.id === optimisticSubtask.id ? saved : subtask
+                ),
+              }
+            : todo
+        )
+      );
+    } catch {
+      setTodos((prev) =>
+        prev.map((todo) =>
+          todo.id === todoId
+            ? {
+                ...todo,
+                subtasks: (todo.subtasks ?? []).filter(
+                  (subtask) => subtask.id !== optimisticSubtask.id
+                ),
+              }
+            : todo
+        )
+      );
+      setError('Could not add subtask.');
+    }
+  }, [todos]);
+
+  const handleToggleSubtask = useCallback(async (todoId: number, subtask: Subtask) => {
+    setTodos((prev) =>
+      prev.map((todo) =>
+        todo.id === todoId
+          ? {
+              ...todo,
+              subtasks: (todo.subtasks ?? []).map((item) =>
+                item.id === subtask.id ? { ...item, completed: !item.completed } : item
+              ),
+            }
+          : todo
+      )
+    );
+
+    try {
+      const response = await fetch(`/api/subtasks/${subtask.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ completed: !subtask.completed }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Could not update subtask.');
+      }
+
+      const saved = (await response.json()) as Subtask;
+      setTodos((prev) =>
+        prev.map((todo) =>
+          todo.id === todoId
+            ? {
+                ...todo,
+                subtasks: (todo.subtasks ?? []).map((item) =>
+                  item.id === subtask.id ? saved : item
+                ),
+              }
+            : todo
+        )
+      );
+    } catch {
+      setTodos((prev) =>
+        prev.map((todo) =>
+          todo.id === todoId
+            ? {
+                ...todo,
+                subtasks: (todo.subtasks ?? []).map((item) =>
+                  item.id === subtask.id ? { ...item, completed: subtask.completed } : item
+                ),
+              }
+            : todo
+        )
+      );
+      setError('Could not update subtask.');
+    }
+  }, []);
+
+  const handleDeleteSubtask = useCallback(async (todoId: number, subtaskId: number) => {
+    const oldSubtask = todos
+      .find((todo) => todo.id === todoId)
+      ?.subtasks?.find((subtask) => subtask.id === subtaskId);
+
+    setTodos((prev) =>
+      prev.map((todo) =>
+        todo.id === todoId
+          ? {
+              ...todo,
+              subtasks: (todo.subtasks ?? []).filter((subtask) => subtask.id !== subtaskId),
+            }
+          : todo
+      )
+    );
+
+    try {
+      const response = await fetch(`/api/subtasks/${subtaskId}`, { method: 'DELETE' });
+      if (!response.ok) {
+        throw new Error('Could not delete subtask.');
+      }
+    } catch {
+      if (oldSubtask) {
+        setTodos((prev) =>
+          prev.map((todo) =>
+            todo.id === todoId
+              ? { ...todo, subtasks: sortSubtasks([...(todo.subtasks ?? []), oldSubtask]) }
+              : todo
+          )
+        );
+      }
+      setError('Could not delete subtask.');
+    }
+  }, [todos]);
+
   const openEdit = useCallback((todo: Todo) => {
     setEditing(todo);
     setEditTitle(todo.title);
     setEditPriority(todo.priority);
     setEditDueLocal(toSingaporeInputValue(todo.due_date));
+    setEditIsRecurring(todo.is_recurring);
+    setEditRecurrencePattern(todo.recurrence_pattern ?? 'weekly');
+    setEditReminderMinutes(todo.reminder_minutes as ReminderMinutes | null);
     setError(null);
   }, []);
 
@@ -319,35 +710,72 @@ export default function Home() {
         return;
       }
 
-      const due_date = editDueLocal ? fromSingaporeInputValue(editDueLocal) : null;
-      const patch = { title: trimmed, priority: editPriority, due_date };
-      const target = editing;
+      const dueDate = editDueLocal ? fromSingaporeInputValue(editDueLocal) : null;
+      if (editIsRecurring && !dueDate) {
+        setError('Recurring todos require a due date.');
+        return;
+      }
+      if (editReminderMinutes !== null && !dueDate) {
+        setError('Reminders require a due date.');
+        return;
+      }
 
-      setTodos((prev) => prev.map((t) => (t.id === target.id ? { ...t, ...patch } : t)));
+      const patch = {
+        title: trimmed,
+        priority: editPriority,
+        due_date: dueDate,
+        is_recurring: editIsRecurring,
+        recurrence_pattern: editIsRecurring ? editRecurrencePattern : null,
+        reminder_minutes: editReminderMinutes,
+      };
+
+      const target = editing;
+      const optimistic: Todo = {
+        ...target,
+        ...patch,
+      };
+
+      setTodos((prev) => prev.map((todo) => (todo.id === target.id ? optimistic : todo)));
       closeEdit();
 
       try {
-        const res = await fetch(`/api/todos/${target.id}`, {
+        const response = await fetch(`/api/todos/${target.id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(patch),
         });
-        if (!res.ok) throw new Error('update failed');
-        const saved: Todo = await res.json();
-        setTodos((prev) => prev.map((t) => (t.id === target.id ? saved : t)));
-      } catch {
-        setError('Could not update todo.');
+
+        if (!response.ok) {
+          const payload = (await response.json().catch(() => ({}))) as { error?: string };
+          throw new Error(payload.error ?? 'update failed');
+        }
+
+        const payload = (await response.json()) as TodoUpdatePayload;
+        applyUpdatePayload(target.id, payload);
+      } catch (err) {
+        setTodos((prev) => prev.map((todo) => (todo.id === target.id ? target : todo)));
+        setError((err as Error).message || 'Could not update todo.');
       }
     },
-    [editing, editTitle, editPriority, editDueLocal, closeEdit]
+    [
+      editing,
+      editTitle,
+      editPriority,
+      editDueLocal,
+      editIsRecurring,
+      editRecurrencePattern,
+      editReminderMinutes,
+      closeEdit,
+    ]
   );
 
-  // Close the edit modal on Escape.
   useEffect(() => {
     if (!editing) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') closeEdit();
+
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeEdit();
     };
+
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [editing, closeEdit]);
@@ -359,8 +787,11 @@ export default function Home() {
     sections.completed.length === 0;
 
   return (
-    <main className="mx-auto max-w-2xl px-4 py-8">
-      <h1 className="mb-6 text-2xl font-bold">Todo App</h1>
+    <main className="mx-auto max-w-3xl px-4 py-8">
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-2xl font-bold">Todo App</h1>
+        <NotificationToggle />
+      </div>
 
       <form
         onSubmit={handleAdd}
@@ -374,15 +805,77 @@ export default function Home() {
           className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
           aria-label="Todo title"
         />
+
         <div className="flex flex-wrap items-center gap-3">
           <PrioritySelect value={priority} onChange={setPriority} />
           <input
             type="datetime-local"
             value={dueLocal}
-            onChange={(e) => setDueLocal(e.target.value)}
+            onChange={(e) => {
+              setDueLocal(e.target.value);
+              if (!e.target.value) {
+                setIsRecurring(false);
+                setReminderMinutes(null);
+              }
+            }}
             className="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
             aria-label="Due date"
           />
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <label className="flex items-center gap-1 text-sm text-gray-700 dark:text-gray-300">
+            <input
+              type="checkbox"
+              checked={isRecurring}
+              onChange={(e) => setIsRecurring(e.target.checked)}
+              disabled={!dueLocal}
+            />
+            Repeat
+          </label>
+
+          {isRecurring && (
+            <select
+              value={recurrencePattern}
+              onChange={(e) => {
+                const value = e.target.value;
+                if (isRecurrencePattern(value)) {
+                  setRecurrencePattern(value);
+                }
+              }}
+              className="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+            >
+              {RECURRENCE_OPTIONS.map((option) => (
+                <option key={option} value={option}>
+                  {option[0].toUpperCase()}
+                  {option.slice(1)}
+                </option>
+              ))}
+            </select>
+          )}
+
+          {!dueLocal && (
+            <span className="text-xs text-gray-500">Set a due date to enable repeat and reminders</span>
+          )}
+
+          <select
+            value={reminderMinutes ?? ''}
+            disabled={!dueLocal}
+            onChange={(e) => {
+              setReminderMinutes(
+                e.target.value ? (Number(e.target.value) as ReminderMinutes) : null
+              );
+            }}
+            className="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+          >
+            <option value="">Reminder: None</option>
+            {REMINDER_VALUES.map((minutes) => (
+              <option key={minutes} value={minutes}>
+                Reminder: {REMINDER_LABELS[minutes]}
+              </option>
+            ))}
+          </select>
+
           <button
             type="submit"
             disabled={!title.trim()}
@@ -420,7 +913,7 @@ export default function Home() {
       )}
 
       {loading ? (
-        <p className="text-sm text-gray-500 dark:text-gray-400">Loading…</p>
+        <p className="text-sm text-gray-500 dark:text-gray-400">Loading...</p>
       ) : isEmpty ? (
         <p className="text-sm text-gray-500 dark:text-gray-400">
           No todos yet. Add one above to get started.
@@ -434,6 +927,9 @@ export default function Home() {
             onToggle={handleToggle}
             onEdit={openEdit}
             onDelete={handleDelete}
+            onAddSubtask={handleAddSubtask}
+            onToggleSubtask={handleToggleSubtask}
+            onDeleteSubtask={handleDeleteSubtask}
           />
           <Section
             title="Pending"
@@ -442,6 +938,9 @@ export default function Home() {
             onToggle={handleToggle}
             onEdit={openEdit}
             onDelete={handleDelete}
+            onAddSubtask={handleAddSubtask}
+            onToggleSubtask={handleToggleSubtask}
+            onDeleteSubtask={handleDeleteSubtask}
           />
           <Section
             title="Completed"
@@ -450,6 +949,9 @@ export default function Home() {
             onToggle={handleToggle}
             onEdit={openEdit}
             onDelete={handleDelete}
+            onAddSubtask={handleAddSubtask}
+            onToggleSubtask={handleToggleSubtask}
+            onDeleteSubtask={handleDeleteSubtask}
           />
         </>
       )}
@@ -478,16 +980,74 @@ export default function Home() {
                 aria-label="Todo title"
                 autoFocus
               />
+
               <div className="flex flex-wrap items-center gap-3">
                 <PrioritySelect value={editPriority} onChange={setEditPriority} />
                 <input
                   type="datetime-local"
                   value={editDueLocal}
-                  onChange={(e) => setEditDueLocal(e.target.value)}
+                  onChange={(e) => {
+                    setEditDueLocal(e.target.value);
+                    if (!e.target.value) {
+                      setEditIsRecurring(false);
+                      setEditReminderMinutes(null);
+                    }
+                  }}
                   className="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
                   aria-label="Due date"
                 />
               </div>
+
+              <div className="flex flex-wrap items-center gap-3">
+                <label className="flex items-center gap-1 text-sm text-gray-700 dark:text-gray-300">
+                  <input
+                    type="checkbox"
+                    checked={editIsRecurring}
+                    onChange={(e) => setEditIsRecurring(e.target.checked)}
+                    disabled={!editDueLocal}
+                  />
+                  Repeat
+                </label>
+
+                {editIsRecurring && (
+                  <select
+                    value={editRecurrencePattern}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      if (isRecurrencePattern(value)) {
+                        setEditRecurrencePattern(value);
+                      }
+                    }}
+                    className="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+                  >
+                    {RECURRENCE_OPTIONS.map((option) => (
+                      <option key={option} value={option}>
+                        {option[0].toUpperCase()}
+                        {option.slice(1)}
+                      </option>
+                    ))}
+                  </select>
+                )}
+
+                <select
+                  value={editReminderMinutes ?? ''}
+                  disabled={!editDueLocal}
+                  onChange={(e) => {
+                    setEditReminderMinutes(
+                      e.target.value ? (Number(e.target.value) as ReminderMinutes) : null
+                    );
+                  }}
+                  className="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+                >
+                  <option value="">Reminder: None</option>
+                  {REMINDER_VALUES.map((minutes) => (
+                    <option key={minutes} value={minutes}>
+                      Reminder: {REMINDER_LABELS[minutes]}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
               <div className="flex justify-end gap-3 pt-2">
                 <button
                   type="button"
@@ -510,4 +1070,8 @@ export default function Home() {
       )}
     </main>
   );
+}
+
+function sortSubtasks(subtasks: Subtask[]): Subtask[] {
+  return [...subtasks].sort((a, b) => a.position - b.position);
 }
