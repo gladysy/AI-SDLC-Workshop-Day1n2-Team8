@@ -32,15 +32,18 @@ export async function PUT(
 
   const { id } = result;
 
-  const existing = tagDB.findById(id, result.session.userId);
-  if (!existing) {
+  const existing = tagDB.findById(id);
+  if (!existing || existing.user_id !== result.session.userId) {
     return NextResponse.json({ error: 'Tag not found' }, { status: 404 });
   }
 
   const body = await request.json();
 
   try {
-    const updated = tagDB.update(id, result.session.userId, body);
+    const updated = tagDB.update(id, {
+      name: body.name,
+      color: body.color,
+    });
     if (!updated) {
       return NextResponse.json({ error: 'Tag not found' }, { status: 404 });
     }
@@ -75,10 +78,12 @@ export async function DELETE(
     return NextResponse.json(result.error, { status: 400 });
   }
 
-  const deleted = tagDB.delete(result.id, result.session.userId);
-  if (!deleted) {
+  const existing = tagDB.findById(result.id);
+  if (!existing || existing.user_id !== result.session.userId) {
     return NextResponse.json({ error: 'Tag not found' }, { status: 404 });
   }
+
+  tagDB.delete(result.id);
 
   return NextResponse.json({ success: true });
 }

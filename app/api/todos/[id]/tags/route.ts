@@ -45,10 +45,12 @@ export async function POST(
     return NextResponse.json({ error: 'tag_id is required' }, { status: 400 });
   }
 
-  const attached = tagDB.attachToTodo(todoId, tagId, session.userId);
-  if (!attached) {
+  const tag = tagDB.findById(tagId);
+  if (!tag || tag.user_id !== session.userId) {
     return NextResponse.json({ error: 'Tag not found' }, { status: 404 });
   }
+
+  tagDB.linkTodoTag(todoId, tagId);
 
   return NextResponse.json({ success: true });
 }
@@ -80,7 +82,12 @@ export async function DELETE(
     return NextResponse.json({ error: 'tag_id is required' }, { status: 400 });
   }
 
-  tagDB.detachFromTodo(todoId, tagId);
+  const tag = tagDB.findById(tagId);
+  if (!tag || tag.user_id !== session.userId) {
+    return NextResponse.json({ error: 'Tag not found' }, { status: 404 });
+  }
+
+  tagDB.unlinkTodoTag(todoId, tagId);
 
   return NextResponse.json({ success: true });
 }

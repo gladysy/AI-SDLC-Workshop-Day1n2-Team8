@@ -30,7 +30,8 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const tag = tagDB.create(session.userId, {
+    const tag = tagDB.create({
+      user_id: session.userId,
       name: trimmed,
       color: body.color ?? '#3B82F6',
     });

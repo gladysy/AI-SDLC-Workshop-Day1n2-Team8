@@ -11,6 +11,30 @@ import type { ReminderMinutes } from './reminders';
 export type { Priority };
 export type RecurrencePattern = 'daily' | 'weekly' | 'monthly' | 'yearly';
 
+// User & Authentication
+export interface User {
+  id: number;
+  username: string;
+  created_at: string;
+}
+
+export interface Authenticator {
+  id: number;
+  user_id: number;
+  credential_id: string;
+  credential_public_key: Buffer;
+  counter: number;
+  created_at: string;
+}
+
+// Holidays (PRP 10: Calendar View)
+export interface Holiday {
+  id: number;
+  date: string; // YYYY-MM-DD, Asia/Singapore
+  name: string;
+  created_at: string;
+}
+
 export interface Todo {
   id: number;
   user_id: number;
@@ -25,6 +49,7 @@ export interface Todo {
   created_at: string;
   updated_at: string | null;
   subtasks?: Subtask[];
+  tags?: Tag[];
 }
 
 export interface CreateTodoInput {
@@ -169,6 +194,23 @@ function getDb(): Database.Database {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS authenticators (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      credential_id TEXT NOT NULL UNIQUE,
+      credential_public_key BLOB NOT NULL,
+      counter INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_authenticators_user_id ON authenticators(user_id);
+
+    CREATE TABLE IF NOT EXISTS holidays (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      date TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     CREATE TABLE IF NOT EXISTS todos (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -237,6 +279,22 @@ function getDb(): Database.Database {
   `);
   _db = db;
   return _db;
+}
+
+interface AuthenticatorRow {
+  id: number;
+  user_id: number;
+  credential_id: string;
+  credential_public_key: Buffer;
+  counter: number;
+  created_at: string;
+}
+
+interface HolidayRow {
+  id: number;
+  date: string;
+  name: string;
+  created_at: string;
 }
 
 interface TodoRow {
@@ -347,12 +405,59 @@ function rowToSubtask(row: SubtaskRow): Subtask {
   };
 }
 
+function rowToAuthenticator(row: AuthenticatorRow): Authenticator {
+  return {
+    id: row.id,
+    user_id: row.user_id,
+    credential_id: row.credential_id,
+    credential_public_key: row.credential_public_key,
+    counter: row.counter,
+    created_at: row.created_at,
+  };
+}
+
+function rowToHoliday(row: HolidayRow): Holiday {
+  return {
+    id: row.id,
+    date: row.date,
+    name: row.name,
+    created_at: row.created_at,
+  };
+}
+
 export interface UserRecord {
   id: number;
   username: string;
 }
 
 export const userDB = {
+  // Create a new user
+  create(username: string): User {
+    const now = getSingaporeNow().toISOString();
+    const info = getDb()
+      .prepare('INSERT INTO users (username, created_at) VALUES (?, ?)')
+      .run(username, now);
+    return {
+      id: Number(info.lastInsertRowid),
+      username,
+      created_at: now,
+    };
+  },
+
+  findById(id: number): User | null {
+    const row = getDb()
+      .prepare('SELECT id, username, created_at FROM users WHERE id = ?')
+      .get(id) as (User & { id: number }) | undefined;
+    return row ?? null;
+  },
+
+  findByUsername(username: string): User | null {
+    const row = getDb()
+      .prepare('SELECT id, username, created_at FROM users WHERE username = ?')
+      .get(username) as (User & { id: number }) | undefined;
+    return row ?? null;
+  },
+
   // Returns the first user, creating a default local user if none exist.
   // Used by the development auth stub (see lib/auth.ts) until PRP 11 lands.
   ensureDefault(): UserRecord {
@@ -368,11 +473,128 @@ export const userDB = {
     return { id: Number(info.lastInsertRowid), username: 'local-user' };
   },
 
-  findById(id: number): UserRecord | null {
+  findByIdOld(id: number): UserRecord | null {
     const row = getDb()
       .prepare('SELECT id, username FROM users WHERE id = ?')
       .get(id) as UserRecord | undefined;
     return row ?? null;
+  },
+};
+
+export const authenticatorDB = {
+  create(input: {
+    user_id: number;
+    credential_id: string;
+    credential_public_key: Buffer;
+    counter: number;
+  }): Authenticator {
+    const now = getSingaporeNow().toISOString();
+    const info = getDb()
+      .prepare(`
+        INSERT INTO authenticators (
+          user_id, credential_id, credential_public_key, counter, created_at
+        ) VALUES (?, ?, ?, ?, ?)
+      `)
+      .run(
+        input.user_id,
+        input.credential_id,
+        input.credential_public_key,
+        input.counter,
+        now
+      );
+    return this.findById(Number(info.lastInsertRowid))!;
+  },
+
+  findById(id: number): Authenticator | null {
+    const row = getDb()
+      .prepare('SELECT * FROM authenticators WHERE id = ?')
+      .get(id) as AuthenticatorRow | undefined;
+    return row ? rowToAuthenticator(row) : null;
+  },
+
+  findByCredentialId(credential_id: string): Authenticator | null {
+    const row = getDb()
+      .prepare('SELECT * FROM authenticators WHERE credential_id = ?')
+      .get(credential_id) as AuthenticatorRow | undefined;
+    return row ? rowToAuthenticator(row) : null;
+  },
+
+  findByUserId(user_id: number): Authenticator[] {
+    const rows = getDb()
+      .prepare('SELECT * FROM authenticators WHERE user_id = ? ORDER BY created_at DESC')
+      .all(user_id) as AuthenticatorRow[];
+    return rows.map(rowToAuthenticator);
+  },
+
+  updateCounter(id: number, counter: number): Authenticator | null {
+    getDb().prepare('UPDATE authenticators SET counter = ? WHERE id = ?').run(counter, id);
+    return this.findById(id);
+  },
+
+  delete(id: number): void {
+    getDb().prepare('DELETE FROM authenticators WHERE id = ?').run(id);
+  },
+};
+
+export const holidayDB = {
+  create(input: { date: string; name: string }): Holiday {
+    const now = getSingaporeNow().toISOString();
+    const info = getDb()
+      .prepare(`
+        INSERT INTO holidays (date, name, created_at)
+        VALUES (?, ?, ?)
+      `)
+      .run(input.date, input.name, now);
+    return this.findById(Number(info.lastInsertRowid))!;
+  },
+
+  findById(id: number): Holiday | null {
+    const row = getDb()
+      .prepare('SELECT * FROM holidays WHERE id = ?')
+      .get(id) as HolidayRow | undefined;
+    return row ? rowToHoliday(row) : null;
+  },
+
+  findByDate(date: string): Holiday | null {
+    const row = getDb()
+      .prepare('SELECT * FROM holidays WHERE date = ?')
+      .get(date) as HolidayRow | undefined;
+    return row ? rowToHoliday(row) : null;
+  },
+
+  findAll(): Holiday[] {
+    const rows = getDb()
+      .prepare('SELECT * FROM holidays ORDER BY date ASC')
+      .all() as HolidayRow[];
+    return rows.map(rowToHoliday);
+  },
+
+  findByMonth(year: number, month: number): Holiday[] {
+    // Find holidays in the given month plus a few days padding for grid edges
+    const startDate = `${year}-${String(month).padStart(2, '0')}-01`;
+    const nextMonth = month === 12 ? 1 : month + 1;
+    const nextYear = month === 12 ? year + 1 : year;
+    const endDate = `${nextYear}-${String(nextMonth).padStart(2, '0')}-01`;
+
+    const rows = getDb()
+      .prepare(
+        `
+          SELECT * FROM holidays
+          WHERE date >= date(?, '-3 days')
+            AND date < date(?, '+3 days')
+          ORDER BY date ASC
+        `
+      )
+      .all(startDate, endDate) as HolidayRow[];
+    return rows.map(rowToHoliday);
+  },
+
+  delete(id: number): void {
+    getDb().prepare('DELETE FROM holidays WHERE id = ?').run(id);
+  },
+
+  deleteByDate(date: string): void {
+    getDb().prepare('DELETE FROM holidays WHERE date = ?').run(date);
   },
 };
 

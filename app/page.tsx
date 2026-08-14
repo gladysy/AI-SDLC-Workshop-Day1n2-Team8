@@ -1,6 +1,7 @@
 'use client';
 
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import type { RecurrencePattern, Subtask, Todo, Template } from '@/lib/db';
 import { useNotifications } from '@/lib/hooks/useNotifications';
 import { SaveTemplateModal } from '@/lib/components/SaveTemplateModal';
@@ -346,6 +347,7 @@ function Section({
 }
 
 export default function Home() {
+  const router = useRouter();
   const [todos, setTodos] = useState<Todo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -366,6 +368,15 @@ export default function Home() {
   const [editIsRecurring, setEditIsRecurring] = useState(false);
   const [editRecurrencePattern, setEditRecurrencePattern] = useState<RecurrencePattern>('weekly');
   const [editReminderMinutes, setEditReminderMinutes] = useState<ReminderMinutes | null>(null);
+
+  const handleLogout = useCallback(async () => {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' });
+      router.push('/login');
+    } catch (err) {
+      console.error('Logout failed:', err);
+    }
+  }, [router]);
 
   const loadTodos = useCallback(async () => {
     setLoading(true);
@@ -803,6 +814,13 @@ export default function Home() {
         <div className="flex flex-wrap items-center gap-2">
           <NotificationToggle />
           <button
+            onClick={() => router.push('/calendar')}
+            className="rounded bg-blue-600 px-3 py-2 text-sm text-white hover:bg-blue-700"
+            type="button"
+          >
+            📅 Calendar
+          </button>
+          <button
             onClick={() => setShowTemplateManager(true)}
             className="rounded bg-purple-600 px-3 py-2 text-sm text-white hover:bg-purple-700"
             type="button"
@@ -810,6 +828,13 @@ export default function Home() {
             📋 Templates
           </button>
           <ExportImportToolbar onImported={() => void loadTodos()} />
+          <button
+            onClick={handleLogout}
+            className="rounded bg-red-600 px-3 py-2 text-sm text-white hover:bg-red-700"
+            type="button"
+          >
+            🚪 Logout
+          </button>
         </div>
       </div>
 

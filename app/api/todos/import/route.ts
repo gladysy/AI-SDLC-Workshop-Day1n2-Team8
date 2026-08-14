@@ -14,7 +14,17 @@ const importSchema = z.object({
       priority: z.enum(['high', 'medium', 'low']),
       is_recurring: z.boolean(),
       recurrence_pattern: z.enum(['daily', 'weekly', 'monthly', 'yearly']).nullable(),
-      reminder_minutes: z.number().int().nullable(),
+      reminder_minutes: z
+        .union([
+          z.literal(15),
+          z.literal(30),
+          z.literal(60),
+          z.literal(120),
+          z.literal(1440),
+          z.literal(2880),
+          z.literal(10080),
+        ])
+        .nullable(),
       created_at: z.string(),
       subtasks: z.array(
         z.object({
