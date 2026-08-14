@@ -1,8 +1,12 @@
 'use client';
 
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
-import type { RecurrencePattern, Subtask, Todo } from '@/lib/db';
+import type { RecurrencePattern, Subtask, Todo, Template } from '@/lib/db';
 import { useNotifications } from '@/lib/hooks/useNotifications';
+import { SaveTemplateModal } from '@/lib/components/SaveTemplateModal';
+import { TemplateManager } from '@/lib/components/TemplateManager';
+import { ExportImportToolbar } from '@/lib/components/ExportImportToolbar';
+import { UseTemplateDropdown } from '@/lib/components/UseTemplateDropdown';
 import {
   PRIORITY_LABELS,
   PRIORITY_STYLES,
@@ -404,6 +408,12 @@ export default function Home() {
     setReminderMinutes(null);
   };
 
+  const [showSaveTemplate, setShowSaveTemplate] = useState(false);
+  const [showTemplateManager, setShowTemplateManager] = useState(false);
+  const [showSubtaskInput, setShowSubtaskInput] = useState(false);
+  const [subtaskTitle, setSubtaskTitle] = useState('');
+  const [subtasks, setSubtasks] = useState<Array<{ title: string; completed?: boolean }>>([]);
+
   const normalizeTodo = (todo: Todo): Todo => ({
     ...todo,
     subtasks: todo.subtasks ?? [],
@@ -790,7 +800,17 @@ export default function Home() {
     <main className="mx-auto max-w-3xl px-4 py-8">
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-bold">Todo App</h1>
-        <NotificationToggle />
+        <div className="flex flex-wrap items-center gap-2">
+          <NotificationToggle />
+          <button
+            onClick={() => setShowTemplateManager(true)}
+            className="rounded bg-purple-600 px-3 py-2 text-sm text-white hover:bg-purple-700"
+            type="button"
+          >
+            📋 Templates
+          </button>
+          <ExportImportToolbar onImported={() => void loadTodos()} />
+        </div>
       </div>
 
       <form
@@ -883,6 +903,125 @@ export default function Home() {
           >
             Add
           </button>
+        </div>
+
+        {/* Subtasks section */}
+        <div className="border-t border-gray-200 pt-3 dark:border-gray-700">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Subtasks:</span>
+            {subtasks.length > 0 && (
+              <span className="text-xs text-gray-500">({subtasks.length})</span>
+            )}
+          </div>
+
+          {subtasks.length > 0 && (
+            <ul className="mt-2 space-y-1 rounded bg-gray-50 p-2 dark:bg-gray-700/30">
+              {subtasks.map((s, i) => (
+                <li
+                  key={i}
+                  className="flex items-center justify-between text-sm text-gray-700 dark:text-gray-300"
+                >
+                  <span>• {s.title}</span>
+                  <button
+                    type="button"
+                    onClick={() => setSubtasks((prev) => prev.filter((_, idx) => idx !== i))}
+                    className="text-red-600 hover:text-red-700 dark:text-red-400"
+                  >
+                    ✕
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {showSubtaskInput ? (
+            <div className="mt-2 flex gap-2">
+              <input
+                type="text"
+                value={subtaskTitle}
+                onChange={(e) => setSubtaskTitle(e.target.value)}
+                placeholder="Subtask title"
+                className="flex-1 rounded-md border border-gray-300 bg-white px-2 py-1 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    if (subtaskTitle.trim()) {
+                      setSubtasks((prev) => [...prev, { title: subtaskTitle.trim() }]);
+                      setSubtaskTitle('');
+                    }
+                  } else if (e.key === 'Escape') {
+                    setShowSubtaskInput(false);
+                  }
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  if (subtaskTitle.trim()) {
+                    setSubtasks((prev) => [...prev, { title: subtaskTitle.trim() }]);
+                    setSubtaskTitle('');
+                  }
+                }}
+                className="rounded bg-green-600 px-2 py-1 text-sm text-white hover:bg-green-700"
+              >
+                Add
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowSubtaskInput(false);
+                  setSubtaskTitle('');
+                }}
+                className="rounded bg-gray-400 px-2 py-1 text-sm text-white hover:bg-gray-500"
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setShowSubtaskInput(true)}
+              className="mt-2 text-sm text-blue-600 hover:underline dark:text-blue-400"
+            >
+              + Add subtask
+            </button>
+          )}
+        </div>
+
+        {/* Template actions */}
+        <div className="border-t border-gray-200 pt-3 dark:border-gray-700">
+          <div className="flex flex-wrap items-center gap-2">
+            {title.trim() && (
+              <button
+                type="button"
+                onClick={() => setShowSaveTemplate(true)}
+                className="rounded bg-purple-600 px-3 py-1 text-sm text-white hover:bg-purple-700"
+              >
+                💾 Save as Template
+              </button>
+            )}
+            <UseTemplateDropdown
+              onTemplateSelected={(template: Template) => {
+                setTitle(template.title_template);
+                setPriority(template.priority);
+                if (template.due_date_offset_minutes) {
+                  const due = new Date(getSingaporeNow().getTime() + template.due_date_offset_minutes * 60_000);
+                  setDueLocal(toSingaporeInputValue(due.toISOString()));
+                  setIsRecurring(template.is_recurring);
+                  setRecurrencePattern(template.recurrence_pattern ?? 'weekly');
+                  setReminderMinutes(template.reminder_minutes);
+                }
+                if (template.subtasks_json) {
+                  try {
+                    const parsed = JSON.parse(template.subtasks_json);
+                    setSubtasks(parsed);
+                  } catch {
+                    // Silent fail
+                  }
+                }
+              }}
+            />
+          </div>
         </div>
       </form>
 
@@ -1068,6 +1207,30 @@ export default function Home() {
           </div>
         </div>
       )}
+
+      <SaveTemplateModal
+        isOpen={showSaveTemplate}
+        onClose={() => setShowSaveTemplate(false)}
+        onSaved={() => {
+          resetForm();
+          setSubtasks([]);
+        }}
+        todoDraft={{
+          title,
+          priority,
+          is_recurring: isRecurring,
+          recurrence_pattern: isRecurring ? recurrencePattern : null,
+          reminder_minutes: reminderMinutes,
+          subtasks,
+        }}
+      />
+
+      <TemplateManager
+        isOpen={showTemplateManager}
+        onClose={() => setShowTemplateManager(false)}
+        onTemplateUsed={() => void loadTodos()}
+        onRefresh={() => void loadTodos()}
+      />
     </main>
   );
 }
